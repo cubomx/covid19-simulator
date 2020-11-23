@@ -3,11 +3,18 @@
 #include <time.h>  /* time */
 #include <vector>
 #include <algorithm>
+#include "random.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#include <cuda.h>
+#include <curand.h>
+#include <curand_kernel.h>
+
 
 using namespace std;
 
-int randomInt(int, int);
-float randomFloat(float, float);
+__device__ __host__ int randomInt(int, int);
+__device__ __host__ float randomFloat(float, float);
 
 class Agent {
 public:
@@ -23,9 +30,10 @@ public:
     int status; /* (0) No infected, (1) infected, (-1) Quarantine,
     (-2) Decease
     */
-    int posX; // 0 - p
-    int posY; // 0 - q
-    void generate(int x, int y) {
+    float posX; // 0 - p
+    float posY; // 0 - q
+
+    __device__ __host__ void generate(float x, float y) {
         posX = x;
         posY = y;
         contagionProba = randomFloat(0.02, 0.03);
@@ -83,17 +91,112 @@ void contagionEffects(Agent*);
 void decease(Agent*);
 
 
+__device__ float generate(curandState* globalState, int ind)
+{
+    //int ind = threadIdx.x;
+    curandState localState = globalState[ind];
+    float RANDOM = curand_uniform(&localState);
+    globalState[ind] = localState;
+    return RANDOM;
+}
+
+__device__ float generateRand(curandState* globalState, int ind, float low, float high) {
+    curandState localState = globalState[ind];
+    float RANDOM = curand_uniform(&localState)*(high);
+    if (RANDOM < low) {
+        RANDOM = low;
+    }
+    globalState[ind] = localState;
+    return RANDOM;
+}
+
+__global__ void setup_kernel(curandState* state, unsigned long seed)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    curand_init(seed, idx, 0, &state[idx]);
+}   
+
+
+
+__global__ void GPU_externContagion(Agent* agent) {
+
+}
+
+__global__ void initAgents(Agent * agent, curandState* globalState) {
+
+    int blockId = blockIdx.x + blockIdx.y * gridDim.x;
+    int threadId = blockId * (blockDim.x * blockDim.y)
+        + (threadIdx.y * blockDim.x) + threadIdx.x;
+  
+    float posX = generate(globalState, threadId)*500.0;
+    float posY = generate(globalState, threadId)*500.0;
+
+    Agent agentNew = Agent();
+    agentNew.posX = posX;
+    agentNew.posY = posY;
+
+    agentNew.contagionProba = generateRand(globalState, threadId, 0.02, 0.03);
+    agentNew.extContagionProba = generateRand(globalState, threadId, 0.02, 0.03);
+    agentNew.deathProba = generateRand(globalState, threadId, 0.007, 0.07);
+    agentNew.movProba = generateRand(globalState, threadId, 0.3, 0.5);
+    agentNew.shortDistanceMovProba = generateRand(globalState, threadId, 0.7, 0.9);
+    /* Incubation time */
+    agentNew.incubationTime = 5;
+    if (generate(globalState, threadId) > 0.5) {
+        agentNew.incubationTime = 6;
+    }
+    agentNew.recoveryTime = 14;
+    agentNew.status = 0;
+    agent[threadId] = agentNew;
+}
+
+
 int main() {
+
     srand(time(NULL));
 
-    static Agent* map[500][500] = { 0 };
+    /*static Agent* map[500][500] = { 0 };
     vector<Agent> agents;
 
     initAgents(agents, map);
-    simulate(agents, map);
+    simulate(agents, map);*/
 
     cout << "Total sum of deaths in " << numDays << " days is: " << deaths << "\n";
     cout << "Total sum of contagions in " << numDays << " days is: " << contagions << "\n";
+
+    static Agent agents[numAgents];
+
+    Agent* agentsGPU;
+    Agent* agentsCPU;
+
+    const size_t size = size_t(numAgents) * sizeof(Agent);
+
+    agentsCPU = (Agent*)malloc(size);
+
+    cudaMalloc((void**)&agentsGPU, size);
+
+    cudaMemcpy(agentsGPU, &agents[0], size, cudaMemcpyHostToDevice);
+
+    curandState* devStates;
+    cudaMalloc(&devStates, numAgents * sizeof(curandState));
+    dim3 block(5, 2);
+    dim3 grid(32, 32);
+    srand(time(0));
+
+    /* setup the kernel for the random numbers */
+    int seed = rand();
+    setup_kernel << <grid, block >> > (devStates, time(NULL));
+
+    
+
+    initAgents << <grid, block >>> (agentsGPU, devStates);
+
+    cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+
+    for (int i = 0; i < 100; i++) {
+        //printf("%f %f \n", agentsCPU[i].posX, agentsCPU[i].posY);
+        printf("%f %d \n", agentsCPU[i].contagionProba, agentsCPU[i].incubationTime);
+    }
 }
 
 /*
@@ -103,7 +206,7 @@ int main() {
 
 void simulate(vector <Agent>& agents, Agent* map[][500]) {
     int day = 0, movement = 0;
-    printf("%lu\n", agents.size());
+    printf("%llu\n", agents.size());
     while (day < numDays) { // days of the simulation
         movement = 0;
 
@@ -286,17 +389,19 @@ void decease(Agent* agent) {
 
 }
 
-int randomInt(int limiteInferior, int limiteSuperior) {
+
+
+__device__ __host__ int randomInt(int limiteInferior, int limiteSuperior) {
     int randomNum;
     /* generate  number between limiteInferior and limiteSuperior: */
     randomNum = rand() % limiteSuperior + limiteInferior;
     return randomNum;
 }
 
-float randomFloat(float a, float b) {
+__device__ __host__ float randomFloat(float a, float b) {
     float random = ((float)rand()) / (float)RAND_MAX;
     float diff = b - a;
     float r = random * diff;
     return a + r;
-    
+
 }
