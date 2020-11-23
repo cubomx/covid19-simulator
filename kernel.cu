@@ -3,7 +3,6 @@
 #include <time.h>  /* time */
 #include <vector>
 #include <algorithm>
-#include "random.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <cuda.h>
@@ -114,12 +113,90 @@ __global__ void setup_kernel(curandState* state, unsigned long seed)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curand_init(seed, idx, 0, &state[idx]);
-}   
+}
 
+__device__ float EuclideanDistance(Agent agent1, Agent Agent2) {
+    float suma = 0;
+    suma = pow(agent1.posX - Agent2.posX, 2);
+    suma += pow(agent1.posY - Agent2.posY, 2);
+    return float(sqrt(suma));
+}
 
+__global__ void GPU_contagio(Agent *agent, curandState* globalState) {
+    int blockId = blockIdx.x + blockIdx.y * gridDim.x;
+    int thisId = blockId * (blockDim.x * blockDim.y)
+        + (threadIdx.y * blockDim.x) + threadIdx.x;
+    for (int bIdY = 0; bIdY < gridDim.y; bIdY++) {
+        for (int bIdX = 0; bIdX < gridDim.x; bIdX++) {
+            for (int tIdY = 0; tIdY < blockDim.y; tIdY++) {
+                for (int tIdX = 0; tIdX < blockDim.x; tIdX++) {
+                    int blockId = bIdX + bIdY * gridDim.x;
+                    int otherId = blockId * (blockDim.x * blockDim.y)
+                        + (tIdY * blockDim.x) + tIdX;
+                    if (agent[otherId].status == 1 && agent[thisId].status == 0) {
+                        if (EuclideanDistance(agent[thisId], agent[otherId]) <= 1.0) {
+                            if (generate(globalState, thisId) <= agent[thisId].contagionProba) {
+                                agent[thisId].status = 1;
+                            }
+                        }
+                    }
+                    
+                }
+            }
+        }
+    }
+    
+}
 
-__global__ void GPU_externContagion(Agent* agent) {
+__global__ void GPU_movility(Agent* agent, curandState* globalState) {
+    int blockId = blockIdx.x + blockIdx.y * gridDim.x;
+    int threadId = blockId * (blockDim.x * blockDim.y)
+        + (threadIdx.y * blockDim.x) + threadIdx.x;
 
+    float xLimit = 500.0, yLimit = 500.0;
+
+    float actualX = agent[threadId].posX, actualY = agent[threadId].posY;
+    float movementX = 0.0, movementY = 0.0;
+    bool movValido = false;
+    if (generate(globalState, threadId) <= agent[threadId].movProba) {
+        if (generate(globalState, threadId) <= agent[threadId].shortDistanceMovProba) {
+            do {
+                movementX = 2 * generate(globalState, threadId) - 1;
+                movementY = 2 * generate(globalState, threadId) - 1;
+                if (movementX + actualX >= 0.0 || movementX + actualX < xLimit) {
+                    if (movementY + actualY >= 0.0 || movementY + actualY < yLimit) {
+                        movValido = true;
+                    }
+                }
+            } while (!movValido);
+        }
+        else {
+            do {
+                movementX = xLimit * generate(globalState, threadId);
+                movementY = yLimit * generate(globalState, threadId);
+                if (movementX + actualX >= 0.0 || movementX + actualX < xLimit) {
+                    if (movementY + actualY >= 0.0 || movementY + actualY < yLimit) {
+                        movValido = true;
+                    }
+                }
+            } while (!movValido);
+
+        }
+        agent[threadId].posX = actualX + movementX;
+        agent[threadId].posY = actualY + movementY;
+    }
+
+}
+
+__global__ void GPU_externContagion(Agent* agent, curandState* globalState) {
+    int blockId = blockIdx.x + blockIdx.y * gridDim.x;
+    int threadId = blockId * (blockDim.x * blockDim.y)
+        + (threadIdx.y * blockDim.x) + threadIdx.x;
+    if (agent[threadId].status == 0) {
+        if (generate(globalState, threadId)*1.0 >= agent[threadId].extContagionProba) {
+            agent[threadId].status = 1;
+        }
+    }
 }
 
 __global__ void initAgents(Agent * agent, curandState* globalState) {
@@ -150,6 +227,16 @@ __global__ void initAgents(Agent * agent, curandState* globalState) {
     agent[threadId] = agentNew;
 }
 
+__host__ int checkTotalContagions(Agent *agentsCPU) {
+    int total = 0;
+    for (int i = 0; i < numAgents; i++) {
+        if (agentsCPU[i].status == 1) {
+            total++;
+        }
+    }
+    return total;
+}
+
 
 int main() {
 
@@ -159,11 +246,12 @@ int main() {
     vector<Agent> agents;
 
     initAgents(agents, map);
-    simulate(agents, map);*/
+    simulate(agents, map);
 
-    cout << "Total sum of deaths in " << numDays << " days is: " << deaths << "\n";
     cout << "Total sum of contagions in " << numDays << " days is: " << contagions << "\n";
-
+    cout << "Total sum of deaths in " << numDays << " days is: " << deaths << "\n";
+    */
+    
     static Agent agents[numAgents];
 
     Agent* agentsGPU;
@@ -193,10 +281,36 @@ int main() {
 
     cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
 
-    for (int i = 0; i < 100; i++) {
-        //printf("%f %f \n", agentsCPU[i].posX, agentsCPU[i].posY);
-        printf("%f %d \n", agentsCPU[i].contagionProba, agentsCPU[i].incubationTime);
+    /*for (int i = 100; i < 200; i++) {
+        printf("%f \n", agentsCPU[i].extContagionProba);
+    }*
+    
+    /* GPU simulation */
+
+    int day = 0, movement;
+    while (day < numDays) {
+        movement = 0;
+        while (movement < maxNumMovDay) {
+            cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+            GPU_contagio << <grid, block >> > (agentsGPU, devStates);
+            cudaDeviceSynchronize();
+            cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+            cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+            GPU_movility << <grid, block >> > (agentsGPU, devStates);
+
+            cudaDeviceSynchronize();
+            cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+            movement++;
+        }
+        cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+        GPU_externContagion << <grid, block >> > (agentsGPU, devStates);
+        cudaDeviceSynchronize();
+        cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+        contagions = checkTotalContagions(agentsCPU);
+        cout << "Total sum of contagions in " << numDays << " days is: " << contagions << "\n";
+        day++;
     }
+
 }
 
 /*
