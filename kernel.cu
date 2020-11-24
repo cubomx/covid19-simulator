@@ -44,6 +44,24 @@ public:
   }
 };
 
+class Stats {
+public:
+  int accumulateContagion = 0;
+  int currentContagion = 0;
+  int accumulateRecovered = 0;
+  int currentRecovered = 0;
+  int accumulateDeads = 0;
+  int currentDeads = 0;
+  int firstContagion = 0;
+  int firstRecovered = 0;
+  int firstDead = 0;
+  int lastContagion = 0;
+  int lastRecovered = 0;
+  int lastDead = 0;
+  int halfContagion = 0;
+  int halfRecovered = 0;
+  int halfDead = 0;
+};
 // Quantity of agents
 const int numAgents = 10240;
 // Days of duration of the simulation
@@ -221,7 +239,18 @@ __global__ void GPU_externContagion(Agent *agent, curandState *globalState) {
     }
   }
 }
-
+__global__ void GPU_Decease(Agent *agent, curandState *globalState) {
+  int blockId = blockIdx.x + blockIdx.y * gridDim.x;
+  int threadId = blockId * (blockDim.x * blockDim.y) +
+                 (threadIdx.y * blockDim.x) + threadIdx.x;
+  double posibilidad = generate(globalState, threadId);
+  int rho = (agent->status == -1 && agent->recoveryTime > 0) ? 1 : 0;
+  if (rho == 1) {
+    if (generate(globalState, threadId) < agent->deathProba) {
+      agent->status = -2;
+    }
+  }
+}
 __global__ void initAgents(Agent *agent, curandState *globalState) {
 
   int blockId = blockIdx.x + blockIdx.y * gridDim.x;
@@ -251,35 +280,58 @@ __global__ void initAgents(Agent *agent, curandState *globalState) {
   agent[threadId] = agentNew;
 }
 
-__host__ int checkCurrentContagions(Agent *agentsCPU) {
-  int total = 0;
+__host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
+  stats->currentContagion = 0;
+  stats->currentRecovered = 0;
+  stats->currentDeads = 0;
   for (int i = 0; i < numAgents; i++) {
-    if (agentsCPU[i].status == 1 ||
-        (agentsCPU[i].status == -1 && agentsCPU[i].recoveryTime > 0)) {
-      total++;
-    }
-  }
-  return total;
-}
 
-__host__ int checkCurrentRecovered(Agent *agentsCPU) {
-  int total = 0;
-  for (int i = 0; i < numAgents; i++) {
-    if (agentsCPU[i].recoveryTime <= 0) {
-      total++;
-    }
-  }
-  return total;
-}
+    if (agentsCPU[i].status != 0) {
+      // Contagios
 
-__host__ int checkCurrentDeaths(Agent *agentsCPU) {
-  int total = 0;
-  for (int i = 0; i < numAgents; i++) {
-    if (agentsCPU[i].status == -3) {
-      total++;
+      stats->currentContagion++;
+
+      if (stats->accumulateContagion == 1) {
+        stats->firstContagion = day;
+      } else if (stats->accumulateContagion == numAgents) {
+        stats->lastContagion = day;
+      } else if (stats->accumulateContagion == numAgents / 2) {
+        stats->halfContagion = day;
+      }
+    }
+    if (agentsCPU[i].status == -1 && agentsCPU[i].recoveryTime <= 0) {
+      // Recovered
+
+      stats->currentRecovered++;
+
+      if (stats->accumulateRecovered == 1) {
+        stats->firstRecovered = day;
+      } else if (stats->accumulateRecovered == numAgents) {
+        stats->lastRecovered = day;
+      } else if (stats->accumulateRecovered == numAgents / 2) {
+        stats->halfRecovered = day;
+      }
+    } else if (agentsCPU[i].status == -2) {
+      // Deaths
+
+      stats->currentDeads++;
+
+      if (stats->accumulateDeads == 1) {
+        stats->firstDead = day;
+      } else if (stats->accumulateDeads == numAgents) {
+        stats->lastDead = day;
+      } else if (stats->accumulateDeads == numAgents / 2) {
+        stats->halfDead = day;
+      }
     }
   }
-  return total;
+
+  stats->currentRecovered -= stats->accumulateRecovered;
+  stats->accumulateRecovered += stats->currentRecovered;
+  stats->currentContagion -= stats->accumulateContagion;
+  stats->accumulateContagion += stats->currentContagion;
+  stats->currentDeads -= stats->accumulateDeads;
+  stats->accumulateDeads += stats->currentDeads;
 }
 
 int main() {
@@ -327,13 +379,10 @@ int main() {
 
   cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
 
-  /*for (int i = 100; i < 200; i++) {
-      printf("%f \n", agentsCPU[i].extContagionProba);
-  }*
-
   /* GPU simulation */
 
   int day = 0, movement;
+  Stats currentStats;
   while (day < numDays) {
     movement = 0;
     GPU_externContagion<<<grid, block>>>(agentsGPU, devStates);
@@ -357,12 +406,17 @@ int main() {
     cudaDeviceSynchronize();
     cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
-    int currentContagions = checkCurrentContagions(agentsCPU);
-    int currentDeaths = checkCurrentDeaths(agentsCPU);
-    int currentRecovered = checkCurrentRecovered(agentsCPU);
+    GPU_Decease<<<grid, block>>>(agentsGPU, devStates);
+    getStats(agentsCPU, &currentStats, day);
     printf("Day: %d, Current infected: %d, Current  Recovered: %d, Current "
            "Dead: %d.\n",
-           day, currentContagions, currentRecovered, currentDeaths);
+           day, currentStats.currentContagion, currentStats.currentRecovered,
+           currentStats.currentDeads);
+    printf(
+        "Day: %d, Accumaled infected: %d, Accumaled  Recovered: %d, Accumaled "
+        "Dead: %d.\n",
+        day, currentStats.accumulateContagion, currentStats.accumulateRecovered,
+        currentStats.accumulateDeads);
     day++;
   }
 }
@@ -400,43 +454,43 @@ void simulate(vector<Agent> &agents, Agent *map[][500]) {
 //     to the actual agent and if they currently are infected.
 // */
 
-// void contagion(Agent *agent, Agent *map[][500]) {
-//   // Check if isn't infected
-//   if (agent->status == 0) {
-//     int x = agent->posX;
-//     int y = agent->posY;
-//     int newState = randomFloat(0.0, 1.0);
-//     // Check if neighbors to a distance of 1 meter
-//     int itGetInfected = 0;
-//     if (x + 1 < xSize) {
-//       if (map[x + 1][y] != nullptr && map[x + 1][y]->status > 0) {
-//         itGetInfected = 1;
-//       }
-//     }
-//     if (x - 1 >= 0) {
-//       if (map[x - 1][y] != nullptr && map[x - 1][y]->status > 0) {
-//         itGetInfected = 1;
-//       }
-//     }
+void contagion(Agent *agent, Agent *map[][500]) {
+  // Check if isn't infected
+  if (agent->status == 0) {
+    int x = agent->posX;
+    int y = agent->posY;
+    int newState = randomFloat(0.0, 1.0);
+    // Check if neighbors to a distance of 1 meter
+    int itGetInfected = 0;
+    if (x + 1 < xSize) {
+      if (map[x + 1][y] != nullptr && map[x + 1][y]->status > 0) {
+        itGetInfected = 1;
+      }
+    }
+    if (x - 1 >= 0) {
+      if (map[x - 1][y] != nullptr && map[x - 1][y]->status > 0) {
+        itGetInfected = 1;
+      }
+    }
 
-//     if (map[x][y + 1] != nullptr && y + 1 < ySize) {
-//       if (map[x][y + 1]->status > 0) {
-//         itGetInfected = 1;
-//       }
-//     }
+    if (map[x][y + 1] != nullptr && y + 1 < ySize) {
+      if (map[x][y + 1]->status > 0) {
+        itGetInfected = 1;
+      }
+    }
 
-//     if (y - 1 >= 0) {
-//       if (map[x][y - 1] != nullptr && map[x][y - 1]->status > 0) {
-//         itGetInfected = 1;
-//       }
-//     }
+    if (y - 1 >= 0) {
+      if (map[x][y - 1] != nullptr && map[x][y - 1]->status > 0) {
+        itGetInfected = 1;
+      }
+    }
 
-//     if (newState <= agent->contagionProba && itGetInfected == 1) {
-//       agent->status = 1;
-//       contagions++;
-//     }
-//   }
-// }
+    if (newState <= agent->contagionProba && itGetInfected == 1) {
+      agent->status = 1;
+      contagions++;
+    }
+  }
+}
 
 /*
  In a place, people doesn't stay at the same place for the whole time.
