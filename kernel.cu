@@ -141,18 +141,21 @@ __global__ void GPU_contagio(Agent *agent, curandState *globalState) {
   int blockId = blockIdx.x + blockIdx.y * gridDim.x;
   int thisId = blockId * (blockDim.x * blockDim.y) +
                (threadIdx.y * blockDim.x) + threadIdx.x;
-  for (int bIdY = 0; bIdY < gridDim.y; bIdY++) {
-    for (int bIdX = 0; bIdX < gridDim.x; bIdX++) {
-      for (int tIdY = 0; tIdY < blockDim.y; tIdY++) {
-        for (int tIdX = 0; tIdX < blockDim.x; tIdX++) {
-          int blockId = bIdX + bIdY * gridDim.x;
-          int otherId =
-              blockId * (blockDim.x * blockDim.y) + (tIdY * blockDim.x) + tIdX;
-          if (agent[otherId].status == 1 && agent[thisId].status == 0) {
-            if (EuclideanDistance(agent[thisId], agent[otherId]) <= 1.0) {
-              if (generate(globalState, thisId) <=
-                  agent[thisId].contagionProba) {
-                agent[thisId].status = 1;
+  if (agent[thisId].status == 0) {
+    for (int bIdY = 0; bIdY < gridDim.y; bIdY++) {
+      for (int bIdX = 0; bIdX < gridDim.x; bIdX++) {
+        for (int tIdY = 0; tIdY < blockDim.y; tIdY++) {
+          for (int tIdX = 0; tIdX < blockDim.x; tIdX++) {
+            int blockId = bIdX + bIdY * gridDim.x;
+            int otherId = blockId * (blockDim.x * blockDim.y) +
+                          (tIdY * blockDim.x) + tIdX;
+            if (agent[otherId].status == 1) {
+              if (EuclideanDistance(agent[thisId], agent[otherId]) <= 1.0) {
+                if (generate(globalState, thisId) <=
+                    agent[thisId].contagionProba) {
+                  agent[thisId].status = 1;
+                  return;
+                }
               }
             }
           }
@@ -191,7 +194,8 @@ __global__ void GPU_movility(Agent *agent, curandState *globalState,
   float actualX = agent[threadId].posX, actualY = agent[threadId].posY;
   float movementX = 0.0, movementY = 0.0;
   bool movValido = false;
-  if (agent[threadId].status == -1 && agent[threadId].incubationTime == 0) {
+  if ((agent[threadId].status == -1 && agent[threadId].incubationTime == 0) ||
+      agent[threadId].status == -2) {
     return;
   }
   if (generate(globalState, threadId) <= agent[threadId].movProba) {
@@ -244,10 +248,12 @@ __global__ void GPU_Decease(Agent *agent, curandState *globalState) {
   int threadId = blockId * (blockDim.x * blockDim.y) +
                  (threadIdx.y * blockDim.x) + threadIdx.x;
   double posibilidad = generate(globalState, threadId);
-  int rho = (agent->status == -1 && agent->recoveryTime > 0) ? 1 : 0;
+  int rho = (agent[threadId].status == -1 && agent[threadId].recoveryTime > 0)
+                ? 1
+                : 0;
   if (rho == 1) {
-    if (generate(globalState, threadId) < agent->deathProba) {
-      agent->status = -2;
+    if (generate(globalState, threadId) < agent[threadId].deathProba) {
+      agent[threadId].status = -2;
     }
   }
 }
@@ -293,11 +299,10 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
 
       if (stats->accumulateContagion == 1) {
         stats->firstContagion = day;
-      } else if (stats->accumulateContagion == numAgents) {
-        stats->lastContagion = day;
       } else if (stats->accumulateContagion == numAgents / 2) {
         stats->halfContagion = day;
       }
+      stats->lastContagion = day;
     }
     if (agentsCPU[i].status == -1 && agentsCPU[i].recoveryTime <= 0) {
       // Recovered
@@ -306,11 +311,11 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
 
       if (stats->accumulateRecovered == 1) {
         stats->firstRecovered = day;
-      } else if (stats->accumulateRecovered == numAgents) {
-        stats->lastRecovered = day;
       } else if (stats->accumulateRecovered == numAgents / 2) {
         stats->halfRecovered = day;
       }
+      stats->lastRecovered = day;
+
     } else if (agentsCPU[i].status == -2) {
       // Deaths
 
@@ -318,11 +323,10 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
 
       if (stats->accumulateDeads == 1) {
         stats->firstDead = day;
-      } else if (stats->accumulateDeads == numAgents) {
-        stats->lastDead = day;
       } else if (stats->accumulateDeads == numAgents / 2) {
         stats->halfDead = day;
       }
+      stats->lastDead = day;
     }
   }
 
@@ -330,8 +334,10 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
   stats->accumulateRecovered += stats->currentRecovered;
   stats->currentContagion -= stats->accumulateContagion;
   stats->accumulateContagion += stats->currentContagion;
+
   stats->currentDeads -= stats->accumulateDeads;
   stats->accumulateDeads += stats->currentDeads;
+  ;
 }
 
 int main() {
