@@ -333,22 +333,71 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
   ;
 }
 
+__host__ void getStats_CPU(vector<Agent> &agents, Stats *stats, int day) {
+  stats->newContagion = 0;
+  stats->newRecovered = 0;
+  stats->newDeads = 0;
+  for (auto &agent : agents) {
+
+    if (agent.status != 0) {
+      // Contagios
+
+      stats->newContagion++;
+      if (stats->accumulateContagion == 0) {
+        stats->firstContagion = day;
+      } else if (stats->accumulateContagion == numAgents / 2) {
+        stats->halfContagion = day;
+      }
+      stats->lastContagion = day;
+    }
+    if (agent.status == -1 && agent.recoveryTime <= 0) {
+      // Recovered
+
+      stats->newRecovered++;
+      if (stats->accumulateRecovered == 0) {
+        stats->firstRecovered = day;
+      } else if (stats->accumulateRecovered == numAgents / 2) {
+        stats->halfRecovered = day;
+      }
+      stats->lastRecovered = day;
+
+    } else if (agent.status == -2) {
+      // Deaths
+
+      stats->newDeads++;
+
+      if (stats->accumulateDeads == 0) {
+        stats->firstDead = day;
+      } else if (stats->accumulateDeads == numAgents / 2) {
+        stats->halfDead = day;
+      }
+      stats->lastDead = day;
+    }
+  }
+
+  stats->newRecovered -= stats->accumulateRecovered;
+  stats->accumulateRecovered += stats->newRecovered;
+  stats->newContagion -= stats->accumulateContagion;
+  stats->accumulateContagion += stats->newContagion;
+
+  stats->newDeads -= stats->accumulateDeads;
+  stats->accumulateDeads += stats->newDeads;
+  ;
+}
+
 int main() {
 
   srand(time(NULL));
 
-  /*static Agent* map[500][500] = { 0 };
+  static Agent *map[500][500] = {0};
   vector<Agent> agents;
 
   initAgents(agents, map);
   simulate(agents, map);
 
-  cout << "Total sum of contagions in " << numDays << " days is: " << contagions
-  << "\n"; cout << "Total sum of deaths in " << numDays << " days is: " <<
-  deaths << "\n";
-  */
+  // ++++++++++++++++++++++++++++++++ GPU ++++++++++++++++++++++++++++++++++++
 
-  static Agent agents[numAgents];
+  /*static Agent agents[numAgents];
 
   Agent *agentsGPU;
   Agent *agentsCPU;
@@ -378,7 +427,7 @@ int main() {
   cudaEventCreate(&end_GPU);
   cudaEventRecord(start_GPU, 0);
 
-  /* setup the kernel for the random numbers */
+  // setup the kernel for the random numbers
 
   setup_kernel<<<grid, block>>>(devStates, time(NULL));
 
@@ -386,7 +435,7 @@ int main() {
 
   cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
 
-  /* GPU simulation */
+
 
   int day = 0, movement;
   Stats currentStats = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -445,7 +494,8 @@ int main() {
   cudaEventRecord(end_GPU, 0);
   float gpu_time_enlapsed;
   cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
-  printf("Time GPU: %f ms.\n", gpu_time_enlapsed);
+  printf("Time Enlapsed in GPU Implementation: %f ms.\n", gpu_time_enlapsed);
+  */
 }
 
 /*
@@ -455,7 +505,10 @@ int main() {
 
 void simulate(vector<Agent> &agents, Agent *map[][500]) {
   int day = 0, movement = 0;
-  printf("%llu\n", agents.size());
+  Stats currentStats = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  Stats *currentStatsPointer = &currentStats;
+  clock_t start_cpu = clock();
+
   while (day < numDays) { // days of the simulation
     movement = 0;
 
@@ -471,8 +524,35 @@ void simulate(vector<Agent> &agents, Agent *map[][500]) {
       contagionEffects(&agent);
       decease(&agent);
     }
+    getStats_CPU(agents, currentStatsPointer, day);
+    printf("Day: %d, New infected: %d, New  Recovered: %d, New "
+           "Dead: %d.\n",
+           day, currentStats.newContagion, currentStats.newRecovered,
+           currentStats.newDeads);
+    if (day % 5 == 0 && day != 0) {
+      printf("===== Day: %d, Accumaled infected: %d, Accumaled  Recovered:%d,"
+             "Accumaled "
+             "Dead: %d. =====\n",
+             day, currentStats.accumulateContagion,
+             currentStats.accumulateRecovered, currentStats.accumulateDeads);
+    }
     day++;
   }
+  clock_t end_cpu = clock();
+  float cpu_time_enlapsed = end_cpu - start_cpu;
+  printf("Time Enlapsed in CPU Implementation: %f ms.\n", cpu_time_enlapsed);
+  getStats_CPU(agents, &currentStats, day);
+  printf("======== First Contagion %d, Half Contagion %d, Last Contagion %d "
+         "========\n",
+         currentStats.firstContagion, currentStats.halfContagion,
+         currentStats.lastContagion);
+  printf("======== First Recovered %d,Half Recovered %d, Last Recovered %d "
+         "========\n",
+         currentStats.firstRecovered, currentStats.halfRecovered,
+         currentStats.lastRecovered);
+  printf("======== First Dead %d,Half Dead %d, Last Dead %d "
+         "========\n",
+         currentStats.firstDead, currentStats.halfDead, currentStats.lastDead);
 }
 
 // /*
