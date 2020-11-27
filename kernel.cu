@@ -1,6 +1,8 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+
 #include <algorithm>
+#include <ctime>
 #include <cuda.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -68,8 +70,6 @@ const int numDays = 61;
 const int maxNumMovDay = 30;
 // Maximum radius of local movement
 const int radiusMaxMovLocal = 5;
-// Meters of distance that the virus can travel
-const int distanceContagion = 1;
 
 int xSize = 500, ySize = 500;
 
@@ -77,28 +77,24 @@ int deaths = 0;
 
 int contagions = 0;
 
-void initAgents(vector<Agent> &agents, Agent *map[][500]) {
+void initAgents(vector<Agent> &agents) {
   for (int i = 0; i < numAgents; i++) {
     int posX = 0;
     int posY = 0;
 
-    do {
-      posX = randomInt(0, 500);
-      posY = randomInt(0, 500);
-    } while (map[posX][posY] != NULL);
+    posX = randomInt(0, 500);
+    posY = randomInt(0, 500);
 
     Agent newAgente = Agent();
 
     newAgente.generate(posX, posY);
-
     agents.push_back(newAgente);
-    map[posX][posY] = &newAgente;
   }
 }
-
-void simulate(vector<Agent> &, Agent *[][500]);
-void contagion(Agent *, Agent *[][500]);
-void movility(Agent *, Agent *[][500]);
+float EuclideanDistance_CPU(Agent, Agent);
+void simulate();
+void contagion(Agent *, vector<Agent> &);
+void movility(Agent *);
 void externContagion(Agent *);
 void contagionEffects(Agent *);
 void decease(Agent *);
@@ -134,7 +130,12 @@ __device__ float EuclideanDistance(Agent agent1, Agent Agent2) {
   suma += pow(agent1.posY - Agent2.posY, 2);
   return float(sqrt(suma));
 }
-
+float EuclideanDistance_CPU(Agent agent1, Agent Agent2) {
+  float suma = 0;
+  suma = pow(agent1.posX - Agent2.posX, 2);
+  suma += pow(agent1.posY - Agent2.posY, 2);
+  return float(sqrt(suma));
+}
 __global__ void GPU_contagio(Agent *agent, curandState *globalState) {
   int blockId = blockIdx.x + blockIdx.y * gridDim.x;
   int thisId = blockId * (blockDim.x * blockDim.y) +
@@ -252,6 +253,7 @@ __global__ void GPU_Decease(Agent *agent, curandState *globalState) {
     }
   }
 }
+
 __global__ void initAgents(Agent *agent, curandState *globalState) {
 
   int blockId = blockIdx.x + blockIdx.y * gridDim.x;
@@ -280,7 +282,7 @@ __global__ void initAgents(Agent *agent, curandState *globalState) {
   agentNew.status = 0;
   agent[threadId] = agentNew;
 }
-
+/* Function to extract the stats from the GPU implementation */
 __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
   stats->newContagion = 0;
   stats->newRecovered = 0;
@@ -332,7 +334,7 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
   stats->accumulateDeads += stats->newDeads;
   ;
 }
-
+/* Function to extract the stats from the CPU implementation */
 __host__ void getStats_CPU(vector<Agent> &agents, Stats *stats, int day) {
   stats->newContagion = 0;
   stats->newRecovered = 0;
@@ -387,81 +389,129 @@ __host__ void getStats_CPU(vector<Agent> &agents, Stats *stats, int day) {
 
 int main() {
 
-  srand(time(NULL));
+  // srand(time(NULL));
 
-  static Agent *map[500][500] = {0};
-  vector<Agent> agents;
-
-  initAgents(agents, map);
-  simulate(agents, map);
+  simulate();
 
   // ++++++++++++++++++++++++++++++++ GPU ++++++++++++++++++++++++++++++++++++
 
-  /*static Agent agents[numAgents];
+  // Variables Creation
+  static Agent agents[numAgents];
 
   Agent *agentsGPU;
   Agent *agentsCPU;
   int seed = rand();
+  float gpu_time_enlapsed;
 
+  float gpu_enlapsed_time_counter = 0;
+  int *devRadiusMaxMovLocal;
+
+  // Memory Allocation
   const size_t size = size_t(numAgents) * sizeof(Agent);
-
   agentsCPU = (Agent *)malloc(size);
-
   cudaMalloc((void **)&agentsGPU, size);
-
   cudaMemcpy(agentsGPU, &agents[0], size, cudaMemcpyHostToDevice);
-
   curandState *devStates;
   cudaMalloc(&devStates, numAgents * sizeof(curandState));
-  dim3 block(5, 2);
-  dim3 grid(32, 32);
-  srand(time(0));
-  int *devRadiusMaxMovLocal;
   cudaMalloc(&devRadiusMaxMovLocal, sizeof(int));
   cudaMemcpy(devRadiusMaxMovLocal, &radiusMaxMovLocal, sizeof(int),
              cudaMemcpyHostToDevice);
+
+  // Kernel's configuration
+  dim3 block(5, 2);
+  dim3 grid(32, 32);
+  srand(time(0));
 
   // Start GPU timers
   cudaEvent_t start_GPU, end_GPU;
   cudaEventCreate(&start_GPU);
   cudaEventCreate(&end_GPU);
-  cudaEventRecord(start_GPU, 0);
 
   // setup the kernel for the random numbers
-
+  cudaEventRecord(start_GPU, 0);
   setup_kernel<<<grid, block>>>(devStates, time(NULL));
+  cudaEventRecord(end_GPU, 0);
+  cudaEventSynchronize(end_GPU);
+  cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+  gpu_enlapsed_time_counter += gpu_time_enlapsed;
+  cudaEventDestroy(start_GPU);
+  cudaEventDestroy(end_GPU);
 
+  cudaEventRecord(start_GPU, 0);
   initAgents<<<grid, block>>>(agentsGPU, devStates);
-
   cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
-
-
+  cudaEventRecord(end_GPU, 0);
+  cudaEventSynchronize(end_GPU);
+  cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+  gpu_enlapsed_time_counter += gpu_time_enlapsed;
+  cudaEventDestroy(start_GPU);
+  cudaEventDestroy(end_GPU);
 
   int day = 0, movement;
   Stats currentStats = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Stats *currentStatsPointer = &currentStats;
   while (day < numDays) {
     movement = 0;
+    // Extern Contagion GPU implementation
+    cudaEventRecord(start_GPU, 0);
     GPU_externContagion<<<grid, block>>>(agentsGPU, devStates);
     cudaDeviceSynchronize();
+    cudaEventRecord(end_GPU, 0);
+    cudaEventSynchronize(end_GPU);
+    cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+    gpu_enlapsed_time_counter += gpu_time_enlapsed;
+    cudaEventDestroy(start_GPU);
+    cudaEventDestroy(end_GPU);
 
     while (movement < maxNumMovDay) {
+      // Contagion GPU Implementation
+      cudaEventRecord(start_GPU, 0);
       GPU_contagio<<<grid, block>>>(agentsGPU, devStates);
       cudaDeviceSynchronize();
+      cudaEventRecord(end_GPU, 0);
+      cudaEventSynchronize(end_GPU);
+      cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+      gpu_enlapsed_time_counter += gpu_time_enlapsed;
+      cudaEventDestroy(start_GPU);
+      cudaEventDestroy(end_GPU);
 
+      // Agents Movility GPU Implementation
+      cudaEventRecord(start_GPU, 0);
       GPU_movility<<<grid, block>>>(agentsGPU, devStates, devRadiusMaxMovLocal);
-
       cudaDeviceSynchronize();
-
+      cudaEventRecord(end_GPU, 0);
+      cudaEventSynchronize(end_GPU);
+      cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+      gpu_enlapsed_time_counter += gpu_time_enlapsed;
+      cudaEventDestroy(start_GPU);
+      cudaEventDestroy(end_GPU);
       movement++;
     }
 
+    // Infecction Effects GPU implementation
+    cudaEventRecord(start_GPU, 0);
     GPU_Efects<<<grid, block>>>(agentsGPU, devStates);
     cudaDeviceSynchronize();
+    cudaEventRecord(end_GPU, 0);
+    cudaEventSynchronize(end_GPU);
+    cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+    gpu_enlapsed_time_counter += gpu_time_enlapsed;
+    cudaEventDestroy(start_GPU);
+    cudaEventDestroy(end_GPU);
 
+    // Agents Decease GPU implementation
+    cudaEventRecord(start_GPU, 0);
     GPU_Decease<<<grid, block>>>(agentsGPU, devStates);
     cudaDeviceSynchronize();
     cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+    cudaEventRecord(end_GPU, 0);
+    cudaEventSynchronize(end_GPU);
+    cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+    gpu_enlapsed_time_counter += gpu_time_enlapsed;
+    cudaEventDestroy(start_GPU);
+    cudaEventDestroy(end_GPU);
+
+    // Print Simulation Stats Every Day
     getStats(agentsCPU, currentStatsPointer, day);
     printf("Day: %d, New infected: %d, New  Recovered: %d, New "
            "Dead: %d.\n",
@@ -477,6 +527,12 @@ int main() {
 
     day++;
   }
+
+  // Print GPU Timers
+  printf(" ------ Time Enlapsed in GPU Implementation: %.2f ms. -----\n",
+         gpu_enlapsed_time_counter);
+
+  // Print Final Stats
   getStats(agentsCPU, &currentStats, day);
   printf("======== First Contagion %d, Half Contagion %d, Last Contagion %d "
          "========\n",
@@ -490,12 +546,10 @@ int main() {
          "========\n",
          currentStats.firstDead, currentStats.halfDead, currentStats.lastDead);
 
-  // Print GPU Timers
-  cudaEventRecord(end_GPU, 0);
-  float gpu_time_enlapsed;
-  cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
-  printf("Time Enlapsed in GPU Implementation: %f ms.\n", gpu_time_enlapsed);
-  */
+  free(agentsCPU);
+  cudaFree(devStates);
+  cudaFree(agentsGPU);
+  cudaFree(devRadiusMaxMovLocal);
 }
 
 /*
@@ -503,26 +557,59 @@ int main() {
     and the struggles of getting it.
 */
 
-void simulate(vector<Agent> &agents, Agent *map[][500]) {
+void simulate() {
+  vector<Agent> agents;
+  clock_t start_cpu;
+  clock_t end_cpu;
+  float cpu_time_enlapsed = 0;
   int day = 0, movement = 0;
   Stats currentStats = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Stats *currentStatsPointer = &currentStats;
-  clock_t start_cpu = clock();
+
+  start_cpu = clock();
+  initAgents(agents);
+  end_cpu = clock();
+  cpu_time_enlapsed += end_cpu - start_cpu;
 
   while (day < numDays) { // days of the simulation
     movement = 0;
 
     while (movement < maxNumMovDay) {
       for (auto &agent : agents) {
-        contagion(&agent, map);
-        movility(&agent, map);
+
+        // Agents Contagion CPU Implementation
+        start_cpu = clock();
+        contagion(&agent, agents);
+        end_cpu = clock();
+        cpu_time_enlapsed += end_cpu - start_cpu;
+
+        // Agents Movility CPU Implementation
+        start_cpu = clock();
+        movility(&agent);
+        end_cpu = clock();
+        cpu_time_enlapsed += end_cpu - start_cpu;
       }
       movement++;
     }
     for (auto &agent : agents) {
+
+      // Agents Extern Contagion CPU Implementation
+      start_cpu = clock();
       externContagion(&agent);
+      end_cpu = clock();
+      cpu_time_enlapsed += end_cpu - start_cpu;
+
+      // Agents Inffection Effects CPU Implementation
+      start_cpu = clock();
       contagionEffects(&agent);
+      end_cpu = clock();
+      cpu_time_enlapsed += end_cpu - start_cpu;
+
+      // Agents Decease CPU Implementation
+      start_cpu = clock();
       decease(&agent);
+      end_cpu = clock();
+      cpu_time_enlapsed += end_cpu - start_cpu;
     }
     getStats_CPU(agents, currentStatsPointer, day);
     printf("Day: %d, New infected: %d, New  Recovered: %d, New "
@@ -538,9 +625,9 @@ void simulate(vector<Agent> &agents, Agent *map[][500]) {
     }
     day++;
   }
-  clock_t end_cpu = clock();
-  float cpu_time_enlapsed = end_cpu - start_cpu;
-  printf("Time Enlapsed in CPU Implementation: %f ms.\n", cpu_time_enlapsed);
+
+  printf("Time Enlapsed in CPU Implementation: %f ms.\n",
+         (cpu_time_enlapsed / CLOCKS_PER_SEC) * 1000);
   getStats_CPU(agents, &currentStats, day);
   printf("======== First Contagion %d, Half Contagion %d, Last Contagion %d "
          "========\n",
@@ -561,40 +648,29 @@ void simulate(vector<Agent> &agents, Agent *map[][500]) {
 //     to the actual agent and if they currently are infected.
 // */
 
-void contagion(Agent *agent, Agent *map[][500]) {
+void contagion(Agent *agent, vector<Agent> &agents) {
+
   // Check if isn't infected
-  if (agent->status == 0) {
-    int x = agent->posX;
-    int y = agent->posY;
-    int newState = randomFloat(0.0, 1.0);
-    // Check if neighbors to a distance of 1 meter
-    int itGetInfected = 0;
-    if (x + 1 < xSize) {
-      if (map[x + 1][y] != nullptr && map[x + 1][y]->status > 0) {
-        itGetInfected = 1;
-      }
-    }
-    if (x - 1 >= 0) {
-      if (map[x - 1][y] != nullptr && map[x - 1][y]->status > 0) {
-        itGetInfected = 1;
-      }
-    }
+  for (auto &agent2 : agents) {
+    if (agent->status == 0) {
 
-    if (map[x][y + 1] != nullptr && y + 1 < ySize) {
-      if (map[x][y + 1]->status > 0) {
-        itGetInfected = 1;
+      float newState = randomFloat(0.0, 1.0);
+      // Check if neighbors to a distance of 1 meter
+      int itGetInfected = 0;
+      if (agent->status < 0 || agent->status == 1) {
+        return;
       }
-    }
+      if (agent2.status > 0) {
+        float distance = EuclideanDistance_CPU(*agent, agent2);
+        if (distance <= 1.0) {
 
-    if (y - 1 >= 0) {
-      if (map[x][y - 1] != nullptr && map[x][y - 1]->status > 0) {
-        itGetInfected = 1;
+          itGetInfected = 1;
+          if (newState <= agent->contagionProba && itGetInfected == 1) {
+            agent->status = 1;
+            break;
+          }
+        }
       }
-    }
-
-    if (newState <= agent->contagionProba && itGetInfected == 1) {
-      agent->status = 1;
-      contagions++;
     }
   }
 }
@@ -604,12 +680,15 @@ void contagion(Agent *agent, Agent *map[][500]) {
  The may move along the area (short or long run).
 */
 
-void movility(Agent *agent, Agent *map[][500]) {
+void movility(Agent *agent) {
   int actualX = agent->posX;
   int actualY = agent->posY;
 
   int itsMoving = randomFloat(0.0, 1.0);
 
+  if (agent->status < 0) {
+    return;
+  }
   if (itsMoving <= agent->movProba) {
     int newX = actualX;
     int newY = actualY;
@@ -637,8 +716,7 @@ void movility(Agent *agent, Agent *map[][500]) {
           movX = 0, movY = 0;
         }
 
-      } while (map[actualX + movX][actualY + movY] != NULL &&
-               validMovement == 0);
+      } while (validMovement == 0);
 
     } else { // Move long distance
       do {
@@ -651,17 +729,13 @@ void movility(Agent *agent, Agent *map[][500]) {
           validMovement = 0;
           movX = 0, movY = 0;
         }
-      } while (map[actualX + movX][actualY + movY] != NULL &&
-               validMovement == 0);
+      } while (validMovement == 0);
     }
     newX += movX;
     newY += movY;
-    map[actualX][actualY] = nullptr;
 
     agent->posX = newX;
     agent->posY = newY;
-
-    map[newX][newY] = agent;
   }
 }
 
@@ -694,7 +768,7 @@ void contagionEffects(Agent *agent) {
     }
     agent->incubationTime -= 1;
 
-  } else if (agent->status < 0) {
+  } else if (agent->status < 0 && agent->status != -2) {
     agent->recoveryTime--;
   }
 }
