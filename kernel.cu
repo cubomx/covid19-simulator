@@ -651,24 +651,23 @@ void simulate() {
 void contagion(Agent *agent, vector<Agent> &agents) {
 
   // Check if isn't infected
+  if (agent->status != 0) {
+    return;
+  }
   for (auto &agent2 : agents) {
-    if (agent->status == 0) {
 
-      float newState = randomFloat(0.0, 1.0);
-      // Check if neighbors to a distance of 1 meter
-      int itGetInfected = 0;
-      if (agent->status < 0 || agent->status == 1) {
-        return;
-      }
-      if (agent2.status > 0) {
-        float distance = EuclideanDistance_CPU(*agent, agent2);
-        if (distance <= 1.0) {
+    float newState = randomFloat(0.0, 1.0);
+    // Check if neighbors to a distance of 1 meter
+    int itGetInfected = 0;
 
-          itGetInfected = 1;
-          if (newState <= agent->contagionProba && itGetInfected == 1) {
-            agent->status = 1;
-            break;
-          }
+    if (agent2.status > 0) {
+      float distance = EuclideanDistance_CPU(*agent, agent2);
+      if (distance <= 1.0) {
+
+        itGetInfected = 1;
+        if (newState <= agent->contagionProba && itGetInfected == 1) {
+          agent->status = 1;
+          break;
         }
       }
     }
@@ -684,7 +683,7 @@ void movility(Agent *agent) {
   int actualX = agent->posX;
   int actualY = agent->posY;
 
-  int itsMoving = randomFloat(0.0, 1.0);
+  float itsMoving = randomFloat(0.0, 1.0);
 
   if (agent->status < 0) {
     return;
@@ -693,7 +692,7 @@ void movility(Agent *agent) {
     int newX = actualX;
     int newY = actualY;
 
-    int nearMovement = randomFloat(0.0, 1.0);
+    float nearMovement = randomFloat(0.0, 1.0);
     int movX = 0, movY = 0;
     int validMovement = 1;
     // Moving near
@@ -721,8 +720,8 @@ void movility(Agent *agent) {
     } else { // Move long distance
       do {
         validMovement = 1;
-        movX = xSize * (randomFloat(0.0, 1.0));
-        movY = ySize * (randomFloat(0.0, 1.0));
+        movX = xSize * int(randomFloat(0.0, 1.0));
+        movY = ySize * int(randomFloat(0.0, 1.0));
 
         if (actualX + movX >= xSize || actualX + movX < 0 ||
             actualY + movY >= ySize || actualY + movY < 0) {
