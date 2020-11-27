@@ -1,6 +1,5 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
 #include <algorithm>
 #include <cuda.h>
 #include <curand.h>
@@ -12,8 +11,8 @@
 
 using namespace std;
 
-__device__ __host__ int randomInt(int, int);
-__device__ __host__ float randomFloat(float, float);
+__host__ int randomInt(int, int);
+__host__ float randomFloat(float, float);
 
 class Agent {
 public:
@@ -44,28 +43,27 @@ public:
   }
 };
 
-class Stats {
-public:
-  int accumulateContagion = 0;
-  int currentContagion = 0;
-  int accumulateRecovered = 0;
-  int currentRecovered = 0;
-  int accumulateDeads = 0;
-  int currentDeads = 0;
-  int firstContagion = 0;
-  int firstRecovered = 0;
-  int firstDead = 0;
-  int lastContagion = 0;
-  int lastRecovered = 0;
-  int lastDead = 0;
-  int halfContagion = 0;
-  int halfRecovered = 0;
-  int halfDead = 0;
+struct Stats {
+  int accumulateContagion;
+  int newContagion;
+  int accumulateRecovered;
+  int newRecovered;
+  int accumulateDeads;
+  int newDeads;
+  int firstContagion;
+  int firstRecovered;
+  int firstDead;
+  int lastContagion;
+  int lastRecovered;
+  int lastDead;
+  int halfContagion;
+  int halfRecovered;
+  int halfDead;
 };
 // Quantity of agents
 const int numAgents = 10240;
 // Days of duration of the simulation
-const int numDays = 160;
+const int numDays = 61;
 // Maximum number of movements per day
 const int maxNumMovDay = 30;
 // Maximum radius of local movement
@@ -177,9 +175,8 @@ __global__ void GPU_Efects(Agent *agent, curandState *globalState) {
     agent[thisId].incubationTime -= 1;
 
   } else if (agent[thisId].status == -1) {
-    if (agent[thisId].recoveryTime > 0) {
-      agent[thisId].recoveryTime--;
-    }
+
+    agent[thisId].recoveryTime--;
   }
 }
 
@@ -194,7 +191,7 @@ __global__ void GPU_movility(Agent *agent, curandState *globalState,
   float actualX = agent[threadId].posX, actualY = agent[threadId].posY;
   float movementX = 0.0, movementY = 0.0;
   bool movValido = false;
-  if ((agent[threadId].status == -1 && agent[threadId].incubationTime == 0) ||
+  if ((agent[threadId].status == -1 && agent[threadId].recoveryTime > 0) ||
       agent[threadId].status == -2) {
     return;
   }
@@ -247,12 +244,10 @@ __global__ void GPU_Decease(Agent *agent, curandState *globalState) {
   int blockId = blockIdx.x + blockIdx.y * gridDim.x;
   int threadId = blockId * (blockDim.x * blockDim.y) +
                  (threadIdx.y * blockDim.x) + threadIdx.x;
-  double posibilidad = generate(globalState, threadId);
-  int rho = (agent[threadId].status == -1 && agent[threadId].recoveryTime > 0)
-                ? 1
-                : 0;
-  if (rho == 1) {
-    if (generate(globalState, threadId) < agent[threadId].deathProba) {
+
+  if (agent[threadId].status == -1 && agent[threadId].recoveryTime > 0) {
+    float posibilidad = generate(globalState, threadId);
+    if (posibilidad <= agent[threadId].deathProba) {
       agent[threadId].status = -2;
     }
   }
@@ -287,17 +282,16 @@ __global__ void initAgents(Agent *agent, curandState *globalState) {
 }
 
 __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
-  stats->currentContagion = 0;
-  stats->currentRecovered = 0;
-  stats->currentDeads = 0;
+  stats->newContagion = 0;
+  stats->newRecovered = 0;
+  stats->newDeads = 0;
   for (int i = 0; i < numAgents; i++) {
 
     if (agentsCPU[i].status != 0) {
       // Contagios
 
-      stats->currentContagion++;
-
-      if (stats->accumulateContagion == 1) {
+      stats->newContagion++;
+      if (stats->accumulateContagion == 0) {
         stats->firstContagion = day;
       } else if (stats->accumulateContagion == numAgents / 2) {
         stats->halfContagion = day;
@@ -307,9 +301,8 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
     if (agentsCPU[i].status == -1 && agentsCPU[i].recoveryTime <= 0) {
       // Recovered
 
-      stats->currentRecovered++;
-
-      if (stats->accumulateRecovered == 1) {
+      stats->newRecovered++;
+      if (stats->accumulateRecovered == 0) {
         stats->firstRecovered = day;
       } else if (stats->accumulateRecovered == numAgents / 2) {
         stats->halfRecovered = day;
@@ -319,9 +312,9 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
     } else if (agentsCPU[i].status == -2) {
       // Deaths
 
-      stats->currentDeads++;
+      stats->newDeads++;
 
-      if (stats->accumulateDeads == 1) {
+      if (stats->accumulateDeads == 0) {
         stats->firstDead = day;
       } else if (stats->accumulateDeads == numAgents / 2) {
         stats->halfDead = day;
@@ -330,13 +323,13 @@ __host__ void getStats(Agent *agentsCPU, Stats *stats, int day) {
     }
   }
 
-  stats->currentRecovered -= stats->accumulateRecovered;
-  stats->accumulateRecovered += stats->currentRecovered;
-  stats->currentContagion -= stats->accumulateContagion;
-  stats->accumulateContagion += stats->currentContagion;
+  stats->newRecovered -= stats->accumulateRecovered;
+  stats->accumulateRecovered += stats->newRecovered;
+  stats->newContagion -= stats->accumulateContagion;
+  stats->accumulateContagion += stats->newContagion;
 
-  stats->currentDeads -= stats->accumulateDeads;
-  stats->accumulateDeads += stats->currentDeads;
+  stats->newDeads -= stats->accumulateDeads;
+  stats->accumulateDeads += stats->newDeads;
   ;
 }
 
@@ -359,6 +352,7 @@ int main() {
 
   Agent *agentsGPU;
   Agent *agentsCPU;
+  int seed = rand();
 
   const size_t size = size_t(numAgents) * sizeof(Agent);
 
@@ -377,8 +371,15 @@ int main() {
   cudaMalloc(&devRadiusMaxMovLocal, sizeof(int));
   cudaMemcpy(devRadiusMaxMovLocal, &radiusMaxMovLocal, sizeof(int),
              cudaMemcpyHostToDevice);
+
+  // Start GPU timers
+  cudaEvent_t start_GPU, end_GPU;
+  cudaEventCreate(&start_GPU);
+  cudaEventCreate(&end_GPU);
+  cudaEventRecord(start_GPU, 0);
+
   /* setup the kernel for the random numbers */
-  int seed = rand();
+
   setup_kernel<<<grid, block>>>(devStates, time(NULL));
 
   initAgents<<<grid, block>>>(agentsGPU, devStates);
@@ -388,43 +389,63 @@ int main() {
   /* GPU simulation */
 
   int day = 0, movement;
-  Stats currentStats;
+  Stats currentStats = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  Stats *currentStatsPointer = &currentStats;
   while (day < numDays) {
     movement = 0;
     GPU_externContagion<<<grid, block>>>(agentsGPU, devStates);
     cudaDeviceSynchronize();
-    cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+
     while (movement < maxNumMovDay) {
-      cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
       GPU_contagio<<<grid, block>>>(agentsGPU, devStates);
       cudaDeviceSynchronize();
-      cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
-      cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+
       GPU_movility<<<grid, block>>>(agentsGPU, devStates, devRadiusMaxMovLocal);
 
       cudaDeviceSynchronize();
-      cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+
       movement++;
     }
-    cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+
     GPU_Efects<<<grid, block>>>(agentsGPU, devStates);
     cudaDeviceSynchronize();
-    cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(agentsGPU, agentsCPU, size, cudaMemcpyHostToDevice);
+
     GPU_Decease<<<grid, block>>>(agentsGPU, devStates);
-    getStats(agentsCPU, &currentStats, day);
-    printf("Day: %d, Current infected: %d, Current  Recovered: %d, Current "
+    cudaDeviceSynchronize();
+    cudaMemcpy(agentsCPU, agentsGPU, size, cudaMemcpyDeviceToHost);
+    getStats(agentsCPU, currentStatsPointer, day);
+    printf("Day: %d, New infected: %d, New  Recovered: %d, New "
            "Dead: %d.\n",
-           day, currentStats.currentContagion, currentStats.currentRecovered,
-           currentStats.currentDeads);
-    printf(
-        "Day: %d, Accumaled infected: %d, Accumaled  Recovered: %d, Accumaled "
-        "Dead: %d.\n",
-        day, currentStats.accumulateContagion, currentStats.accumulateRecovered,
-        currentStats.accumulateDeads);
+           day, currentStats.newContagion, currentStats.newRecovered,
+           currentStats.newDeads);
+    if (day % 5 == 0 && day != 0) {
+      printf("===== Day: %d, Accumaled infected: %d, Accumaled  Recovered:%d,"
+             "Accumaled "
+             "Dead: %d. =====\n",
+             day, currentStats.accumulateContagion,
+             currentStats.accumulateRecovered, currentStats.accumulateDeads);
+    }
+
     day++;
   }
+  getStats(agentsCPU, &currentStats, day);
+  printf("======== First Contagion %d, Half Contagion %d, Last Contagion %d "
+         "========\n",
+         currentStats.firstContagion, currentStats.halfContagion,
+         currentStats.lastContagion);
+  printf("======== First Recovered %d,Half Recovered %d, Last Recovered %d "
+         "========\n",
+         currentStats.firstRecovered, currentStats.halfRecovered,
+         currentStats.lastRecovered);
+  printf("======== First Dead %d,Half Dead %d, Last Dead %d "
+         "========\n",
+         currentStats.firstDead, currentStats.halfDead, currentStats.lastDead);
+
+  // Print GPU Timers
+  cudaEventRecord(end_GPU, 0);
+  float gpu_time_enlapsed;
+  cudaEventElapsedTime(&gpu_time_enlapsed, start_GPU, end_GPU);
+  printf("Time GPU: %f ms.\n", gpu_time_enlapsed);
 }
 
 /*
@@ -611,14 +632,14 @@ void decease(Agent *agent) {
   }
 }
 
-__device__ __host__ int randomInt(int limiteInferior, int limiteSuperior) {
+__host__ int randomInt(int limiteInferior, int limiteSuperior) {
   int randomNum;
   /* generate  number between limiteInferior and limiteSuperior: */
   randomNum = rand() % limiteSuperior + limiteInferior;
   return randomNum;
 }
 
-__device__ __host__ float randomFloat(float a, float b) {
+__host__ float randomFloat(float a, float b) {
   float random = ((float)rand()) / (float)RAND_MAX;
   float diff = b - a;
   float r = random * diff;
