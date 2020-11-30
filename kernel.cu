@@ -1,6 +1,7 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+#include <__clang_cuda_runtime_wrapper.h>
 #include <algorithm>
 #include <ctime>
 #include <cuda.h>
@@ -389,12 +390,15 @@ __host__ void getStats_CPU(vector<Agent> &agents, Stats *stats, int day) {
 
 int main() {
 
-  // srand(time(NULL));
+  // ++++++++++++++++++++++++++++++++ CPU ++++++++++++++++++++++++++++++++++++
+  printf("++++++++++++++++++++++++++++++++ CPU "
+         "++++++++++++++++++++++++++++++++++++\n") srand(time(NULL));
 
   simulate();
 
   // ++++++++++++++++++++++++++++++++ GPU ++++++++++++++++++++++++++++++++++++
-
+  printf("\n\n++++++++++++++++++++++++++++++++ GPU "
+         "++++++++++++++++++++++++++++++++++++\n") srand(time(NULL));
   // Variables Creation
   static Agent agents[numAgents];
 
